@@ -1,0 +1,1 @@
+{"dependencies":{"playwright":"^1.64.1"},"description":"Download a Goofish (Xianyu) seller shop: shop item list, then per-item title, price, description and all gallery images, in gallery order.","name":"goofish-scraper","scripts":{"collect":"node collect-shop.js","download":"node download-items.js"},"type":"module","version":"1.0.0"}
