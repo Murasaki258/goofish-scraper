@@ -17,13 +17,23 @@
 //   Older items use "-0-fleamarket.jpg", newer ones "-0-xy_item.jpg".
 // - Wait 15s after domcontentloaded before collecting; longer waits did NOT
 //   fix undercounts in earlier versions, the x-order rule is what fixed them.
-// - Description: text between "运费由卖家承担" and "聊一聊". If a page has no
-//   such anchor, description comes out empty -- check verify.py's
-//   "empty description" list and recover that item by hand if needed.
-// - Status: detected per detail page ("立即购买" => on_sale, "已售出/已下架/
-//   宝贝不存在/已卖出" => sold_or_removed, else unknown) and recorded in
-//   meta.json and index.json, so a shop without on-sale tabs can still be
-//   filtered to on-sale items afterwards.
+// - Description, two page layouts (a second shop on 2026-10-31 had NO
+//   "运费由卖家承担" anchor at all, so the old rule returned empty for all
+//   67 items):
+//   1. First layout: text between "运费由卖家承担" and "聊一聊".
+//   2. New layout: text after "浏览\n", before "为你推荐", cut at
+//      "卖掉了"/"聊一聊"/"立即购买"; spaced single-char field names are
+//      joined ("功 能 状 态 ：" -> "功能状态：") and whitespace collapsed.
+//   Try layout 1 first, then layout 2. If both are empty, verify.py will
+//   list the item -- do not silently ship it without a description.
+// - Status, also fixed for the second shop (old rule left 19/67 "unknown"):
+//   sold if "卖掉了" appears before "为你推荐", or if the page says
+//   已售出/已下架/宝贝不存在/已卖出; else on_sale if "聊一聊" or "立即购买"
+//   is present; else unknown. "unknown" must NOT be treated as on_sale:
+//   spot-checks showed unknown items were in fact sold. Final delivery
+//   should filter on status == "on_sale" only. Use recheck-items.js to
+//   re-derive description + status for an already-downloaded output dir
+//   without re-downloading images.
 import { chromium } from 'playwright';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -83,13 +93,32 @@ for (const [idx, target] of shopItems.entries()) {
       });
       const seen = new Set(); const g = [];
       for (const b of bases) { if (seen.has(b)) break; seen.add(b); g.push(b); }
-      const status = /已售出|已下架|宝贝不存在|已卖出/.test(text) ? 'sold_or_removed' : (/立即购买/.test(text) ? 'on_sale' : 'unknown');
-      return { title, price: priceMatch ? priceMatch[1] : '', bodyText: text.slice(0, 5000), gallery: g, largeCount: large.length, status };
+      // Status + description share the "before 为你推荐" head: recommendations
+      // below it can contain sold/chat words from other items.
+      const recIdx = text.indexOf('为你推荐');
+      const head = recIdx >= 0 ? text.slice(0, recIdx) : text;
+      const status = (head.includes('卖掉了') || /已售出|已下架|宝贝不存在|已卖出/.test(head)) ? 'sold'
+        : (/聊一聊|立即购买/.test(head) ? 'on_sale' : 'unknown');
+      let description = '';
+      const dm = text.match(/运费由卖家承担\s*([\s\S]*?)\s*聊一聊/);
+      if (dm) description = dm[1].trim();
+      if (!description) {
+        const bi = head.indexOf('浏览\n');
+        if (bi >= 0) {
+          let seg = head.slice(bi + 3);
+          for (const cut of ['\n卖掉了', '\n聊一聊', '\n立即购买']) {
+            const ci = seg.indexOf(cut);
+            if (ci >= 0) seg = seg.slice(0, ci);
+          }
+          seg = seg.replace(/([\u4e00-\u9fff])\s+([\u4e00-\u9fff])\s+([\u4e00-\u9fff])\s+([\u4e00-\u9fff])\s*：/g, '$1$2$3$4：');
+          seg = seg.replace(/([\u4e00-\u9fff])\s+([\u4e00-\u9fff])\s*：/g, '$1$2：');
+          description = seg.replace(/\s+/g, ' ').trim();
+        }
+      }
+      return { title, price: priceMatch ? priceMatch[1] : '', description, gallery: g, largeCount: large.length, status };
     });
-    let description = '';
-    const dm = detail.bodyText.match(/运费由卖家承担\s*([\s\S]*?)\s*聊一聊/);
-    if (dm) description = dm[1].trim();
-    console.log(`  title=${detail.title} price=${detail.price} large=${detail.largeCount} gallery=${detail.gallery.length} status=${detail.status}`);
+    const description = detail.description;
+    console.log(`  title=${detail.title} price=${detail.price} large=${detail.largeCount} gallery=${detail.gallery.length} status=${detail.status} descLen=${description.length}`);
     fs.writeFileSync(path.join(itemDir, 'meta.json'), JSON.stringify({ itemId: target.itemId, url: target.url, title: detail.title, price: detail.price, description, status: detail.status, imageUrls: detail.gallery, imageCount: detail.gallery.length }, null, 2));
     let downloaded = 0;
     for (const [i, imgUrl] of detail.gallery.entries()) {
